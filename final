@@ -1,0 +1,403 @@
+!sudo apt install tesseract-ocr
+!pip install pytesseract
+
+from google.colab import files
+from PIL import Image
+
+def upload_image():
+    uploaded = files.upload()
+    return uploaded
+
+uploaded_files = upload_image()
+
+
+import pytesseract
+
+def extract_text_from_image(uploaded_files):
+    for file_name in uploaded_files.keys():
+        print(f"Processing file: {file_name}")
+        image_path = file_name
+
+        # 이미지를 열고 텍스트를 추출
+        image = Image.open(image_path)
+        text = pytesseract.image_to_string(image)
+
+        return text
+
+extracted_text = extract_text_from_image(uploaded_files)
+print("Extracted Text:", extracted_text)
+
+import re
+
+def clean_text(text):
+    text = re.sub(r'\s+', ' ', text)  # 여러 개의 공백을 하나로
+    text = re.sub(r'[^\w\s\.\%]', '', text)  # 문자, 숫자, 공백, %를 제외한 모든 문자 제거
+    return text
+
+cleaned_text = clean_text(extracted_text)
+
+def extract_nutrition_facts(text):
+    nutrition_facts = {}
+
+    pattern = r'(?P<name>[A-Za-z\s]+)\s*(?P<value>\d+\.?\d*)\s*(?P<unit>[a-zA-Z%]+)'
+
+    matches = re.finditer(pattern, text)
+
+    for match in matches:
+        name = match.group('name').strip()
+        value = match.group('value').strip()
+        unit = match.group('unit').strip()
+        nutrition_facts[name] = {'value': value, 'unit': unit}
+
+        # Check if unit length is 3 or more and value ends with 9
+        if len(unit) >= 3 and value.endswith('9'):
+            value = value[:-1]  # Remove the last '9'
+            unit = 'g'  # Change unit to 'g'
+
+        nutrition_facts[name] = {'value': value, 'unit': unit}
+
+    return nutrition_facts
+
+nutrition_facts = extract_nutrition_facts(cleaned_text)
+
+
+import json
+
+def format_to_ground_truth(nutrition_facts):
+    ground_truth = {
+        "gt_parse": {
+            "serving": [],
+            "cal": {},
+            "fat": {},
+            "cholesterol": {},
+            "carb": {},
+            "protein": {}
+        }
+    }
+
+    # serving size와 per container 정보 찾기
+    if "Serving Size" in nutrition_facts:
+        serving_size = nutrition_facts.pop("Serving Size")
+        ground_truth["gt_parse"]["serving"].append({
+            "serving_size": serving_size['value'],
+            "unit": serving_size['unit'],
+            "gram": ""  # gram 정보가 없는 경우 빈 문자열
+        })
+    if "Servings Per Container" in nutrition_facts:
+        servings_per_container = nutrition_facts.pop("Servings Per Container")
+        ground_truth["gt_parse"]["serving"].append({
+            "serving_size_per_contain": servings_per_container['value']
+        })
+
+    # calories 정보 찾기
+    if "Calories" in nutrition_facts:
+        calories = nutrition_facts.pop("Calories")
+        if calories['value']:  # 값이 있는 경우에만 출력
+            ground_truth["gt_parse"]["cal"]["calories"] = calories['value'] + calories['unit']
+
+    # fat 정보 찾기
+    fat_keys = ["Total Fat", "Saturated Fat", "Trans Fat"]
+    for key in fat_keys:
+        if key in nutrition_facts:
+            fat_value = nutrition_facts.pop(key)
+            if fat_value['value']:  # 값이 있는 경우에만 출력
+                ground_truth["gt_parse"]["fat"][key.lower().replace(' ', '_')] = fat_value['value'] + fat_value['unit']
+
+    # cholesterol 정보 찾기
+    if "Cholesterol" in nutrition_facts:
+        cholesterol = nutrition_facts.pop("Cholesterol")
+        if cholesterol['value']:  # 값이 있는 경우에만 출력
+            ground_truth["gt_parse"]["cholesterol"]["total_cholesterol"] = cholesterol['value'] + cholesterol['unit']
+        else:
+            del ground_truth["gt_parse"]["cholesterol"]  # 값이 없는 경우 항목 삭제
+
+    # carbohydrate 정보 찾기
+    carb_keys = ["Total Carbohydrate", "Dietary Fiber", "Sugars"]
+    for key in carb_keys:
+        if key in nutrition_facts:
+            carb_value = nutrition_facts.pop(key)
+            if carb_value['value']:  # 값이 있는 경우에만 출력
+                ground_truth["gt_parse"]["carb"][key.lower().replace(' ', '_')] = carb_value['value'] + carb_value['unit']
+
+    # protein 정보 찾기
+    if "Protein" in nutrition_facts:
+        protein = nutrition_facts.pop("Protein")
+        if protein['value']:  # 값이 있는 경우에만 출력
+            ground_truth["gt_parse"]["protein"]["total_protein"] = protein['value'] + protein['unit']
+
+    return ground_truth
+
+ground_truth = format_to_ground_truth(nutrition_facts)
+
+# 출력된 결과에서 값이 없는 항목 삭제
+for key in list(ground_truth["gt_parse"].keys()):
+    if not ground_truth["gt_parse"][key]:  # 값이 없는 경우
+        del ground_truth["gt_parse"][key]  # 해당 항목 삭제
+
+# 추출된 결과 출력
+ground_truth_json = json.dumps({"ground_truth": ground_truth}, separators=(',', ':'))
+print(ground_truth_json)
+import re
+
+def clean_text(text):
+    # 공백 및 특수 문자 정리
+    text = re.sub(r'\s+', ' ', text)  # 여러 개의 공백을 하나로
+    text = re.sub(r'[^\w\s\.\%]', '', text)  # 문자, 숫자, 공백, %를 제외한 모든 문자 제거
+    return text
+
+def extract_sugar_content(text):
+    # 정규표현식을 이용해 Sugars 항목 추출
+    pattern = r'Sugars\s*(\d+\.?\d*)\s*([a-zA-Z%]+)'
+
+    match = re.search(pattern, text)
+
+    if match:
+        value = match.group(1).strip()
+        unit = match.group(2).strip()
+        return {'sugar': {'value': value, 'unit': unit}}
+    else:
+        return {}
+
+# 텍스트 정제 및 Sugars 항목 추출 호출
+cleaned_text = clean_text(extracted_text)
+sugar_content = extract_sugar_content(cleaned_text)
+
+# 추출된 결과 출력
+if sugar_content:
+    print("Sugars Content:")
+    for nutrient, info in sugar_content.items():
+        print(f"{nutrient}: {info['value']} {info['unit']}")
+else:
+    print("No Sugars content found.")
+import re
+import json
+
+# get_sugar_value 함수
+def get_sugar_value(parsed_data):
+    sugar_info = parsed_data.get("gt_parse", {}).get("carb", {}).get("sugars")
+    if sugar_info:
+        value, unit = re.match(r'(\d+\.?\d*)([a-zA-Z%]+)', sugar_info).groups()
+        return float(value), unit
+    else:
+        return None, None
+
+# 사용자로부터 몸무게 입력 받기
+weight = float(input("몸무게를 입력하세요 (kg): "))
+
+# 하루 섭취 가능 칼로리 계산
+calorie = weight * 24 * 1.5
+print(f"하루 섭취 가능 칼로리: {calorie} kcal")
+
+# 일일 섭취 가능 당류 계산 (당뇨 환자 기준)
+sugar = calorie * 0.1 / 4
+print(f"일일 섭취 가능 당류: {sugar} g")
+
+# 당류 정보 추출
+value, unit = get_sugar_value(ground_truth)
+
+# 섭취 가능 여부 확인
+if value is not None and unit is not None:
+    if unit == '%':
+        sugar_per = calorie * 0.1
+        if value < sugar_per:
+            print(f"앞으로 {sugar_per - value}mg 섭취 가능합니다.")
+        else:
+            print("섭취 불가능")
+    elif unit == 'mg':
+        sugar_mg = sugar * 1000
+        if value < sugar_mg:
+            print("섭취 가능")
+            print(f"앞으로 {sugar_mg - value}mg 섭취 가능합니다.")
+        else:
+            print("섭취 불가능")
+    else:
+        if value < sugar:
+            print("섭취 가능")
+            print(f"앞으로 {sugar - value}g 섭취 가능합니다.")
+        else:
+            print("섭취 불가능")
+else:
+    print("당류 정보가 없습니다.")
+
+
+!pip install datasets
+# 허깅페이스 읽어오기
+from datasets import load_dataset
+# 'fruk19/nutrition_fact_donut_v1' 데이터셋 불러오기
+dataset = load_dataset("fruk19/nutrition_fact_donut_v1")
+
+print(dataset)
+
+
+import matplotlib.pyplot as plt
+import numpy as np
+from pprint import pprint
+plt.imshow(dataset['test']['image'][1])
+pprint(dataset['test']['ground_truth'][1])
+
+
+import json
+
+def get_sugar_value(json_data):
+    # Parse the JSON data
+    parsed_data = json.loads(json_data)
+
+    # Extract the value of sugar
+    sugar_value = parsed_data.get("gt_parse", {}).get("carb", {}).get("sugar")
+
+    # Return the sugar value or a not found message
+    if sugar_value:
+        return f"Sugar: {sugar_value}"
+    else:
+        return "Sugar information not found"
+
+# Example usage
+data = dataset['test']['ground_truth'][1]
+print(get_sugar_value(data))
+
+
+from datasets import load_dataset
+import json
+
+true_arr = np.zeros(100)
+
+# Load the dataset
+dataset = load_dataset("fruk19/nutrition_fact_donut_v1")
+
+def extract_and_print_sugar(dataset):
+    """
+    Iterate through the test set of the dataset and print the value of sugar from ground_truth with the index.
+
+    Parameters:
+    dataset (DatasetDict): A DatasetDict object with train, validation, and test sets.
+
+    Returns:
+    None
+    """
+    test_set = dataset['test']
+
+    for index, entry in enumerate(test_set):
+        # Parse the JSON data for each entry
+        ground_truth = entry['ground_truth']
+        parsed_data = json.loads(ground_truth)
+
+        # Extract the value of sugar
+        sugar_value = parsed_data.get("gt_parse", {}).get("carb", {}).get("sugar")
+
+        # Print the sugar value or a not found message
+        if sugar_value:
+            print(f"Index {index}: Sugar: {sugar_value}")
+        else:
+            print(f"Index {index}: Sugar information not found")
+
+        #당류 계산하고 섭취 가능하면 1 아니면 0으로 배열에 넣기
+        if sugar_value:
+            sugar_numeric = float(''.join(filter(str.isdigit, sugar_value)))
+            if(sugar>sugar_numeric):
+                true_arr[index] = 1
+            else:
+                true_arr[index] = 0
+        else:
+            true_arr[index] = 1
+
+extract_and_print_sugar(dataset)
+print(true_arr)
+
+pred_arr = np.zeros(100)
+test_set = dataset['test']
+
+#예측셋용 텍스트 추출 함수
+def extract_text_from_image_pred(image_data):
+    if isinstance(image_data, str):
+        print(f"Processing file: {image_data}")
+        image = Image.open(image_data)
+    else:
+        image = image_data
+
+    text = pytesseract.image_to_string(image)
+    return text
+
+
+for index, entry in enumerate(test_set):
+
+
+        #테스트셋 이미지에서 텍스트 추출
+        image_data = dataset['test']['image'][1]
+        extracted_text = extract_text_from_image_pred(image_data)
+        # 텍스트 정제 및 영양 성분 추출 호출
+        cleaned_text = clean_text(extracted_text)
+        nutrition_facts = extract_nutrition_facts(cleaned_text)
+
+        # gt_parse 형식으로 변환
+        ground_truth = format_to_ground_truth(nutrition_facts)
+
+        # 출력된 결과에서 값이 없는 항목 삭제
+        for key in list(ground_truth["gt_parse"].keys()):
+            if not ground_truth["gt_parse"][key]:  # 값이 없는 경우
+                del ground_truth["gt_parse"][key]  # 해당 항목 삭제
+
+        parsed_data = ground_truth
+
+        # Extract the value of sugar
+        sugar_value = parsed_data.get("gt_parse", {}).get("carb", {}).get("sugar")
+
+        # Print the sugar value or a not found message
+        if sugar_value:
+            print(f"Index {index}: Sugar: {sugar_value}")
+        else:
+            print(f"Index {index}: Sugar information not found")
+
+        #당류 계산하고 섭취 가능하면 1 아니면 0으로 배열에 넣기
+        if sugar_value:
+            sugar_numeric = float(''.join(filter(str.isdigit, sugar_value)))
+            if(sugar>sugar_numeric):
+                pred_arr[index] = 1
+            else:
+                pred_arr[index] = 0
+        else:
+            pred_arr[index] = 1
+
+
+
+
+
+# Call the function
+print(pred_arr)
+
+#라이브러리 import
+!pip install pandas scikit-learn
+
+import pandas as pd
+from sklearn.metrics import accuracy_score, recall_score, f1_score, precision_score, confusion_matrix
+
+#임시 데이터셋
+y_true = true_arr # 실제 값 #true_arr 넣기
+
+
+y_pred = pred_arr # 예측 값
+
+# 정확도 계산
+accuracy = accuracy_score(y_true, y_pred)
+
+# 민감성(재현율) 계산
+recall = recall_score(y_true, y_pred)
+
+# F1 스코어 계산
+f1 = f1_score(y_true, y_pred)
+
+# 정밀도 계산
+precision = precision_score(y_true, y_pred)
+
+# 혼동 행렬 계산 (특이도 계산에 필요)
+tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+
+# 특이도 계산
+specificity = tn / (tn + fp)
+
+# 결과를 데이터프레임으로 정리
+results = pd.DataFrame({
+    'Metric': ['Accuracy', 'Sensitivity (Recall)', 'Specificity', 'Precision', 'F1 Score'],
+    'Score': [accuracy, recall, specificity, precision, f1]
+})
+
+print(results)
